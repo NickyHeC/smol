@@ -104,15 +104,10 @@ impl RunCmd {
             cpus: self.cpus.unwrap_or(4),
             memory_mib: self.mem.unwrap_or(8192),
             network: self.net || !self.port.is_empty(),
-            storage_gib: None,
-            overlay_gib: None,
-            allowed_cidrs: None,
-            network_backend: None,
             gpu: self.gpu,
             gpu_vram_mib: self.gpu_vram,
-            rosetta: false,
             cuda: self.cuda,
-            dns: None,
+            ..Default::default()
         };
 
         // Resolve the image: a registry reference is pulled in-guest, while a
