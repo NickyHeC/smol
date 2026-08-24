@@ -180,9 +180,15 @@ def _native_exec_options(opts: Optional[ExecOptions]) -> Optional[dict]:
 
 
 def _native_config(name: str, config: MachineConfig) -> dict:
-    cfg: dict[str, Any] = {"name": name, "persistent": config.persistent}
+    cfg: dict[str, Any] = {
+        "name": name,
+        "persistent": config.persistent,
+        "forkable": config.forkable,
+    }
     if config.image is not None:
         cfg["image"] = config.image
+    if config.command is not None:
+        cfg["command"] = list(config.command)
     if config.env:
         cfg["env"] = dict(config.env)
     if config.workdir is not None:
@@ -203,6 +209,10 @@ def _native_config(name: str, config: MachineConfig) -> dict:
             res["memory_mib"] = r.memory_mb
         if r.network is not None:
             res["network"] = r.network
+        if r.allow_cidrs is not None:
+            res["allowed_cidrs"] = list(r.allow_cidrs)
+        if r.allow_hosts is not None:
+            res["allowed_hosts"] = list(r.allow_hosts)
         if r.storage_gb is not None:
             res["storage_gib"] = r.storage_gb
         if r.overlay_gb is not None:
@@ -257,9 +267,11 @@ def _register_local(t: "LocalTransport") -> None:
 
 
 class LocalTransport:
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, cleanup_on_exit: bool = True) -> None:
         self._inner = inner
-        _register_local(self)
+        self._cleanup_on_exit = cleanup_on_exit
+        if cleanup_on_exit:
+            _register_local(self)
 
     @property
     def name(self) -> str:
@@ -413,7 +425,8 @@ class LocalTransport:
             self._inner.start()
         except Exception as e:  # noqa: BLE001
             raise wrap_native_error(e) from e
-        _live_local.add(self)
+        if self._cleanup_on_exit:
+            _live_local.add(self)
         self.wait_until_ready()
 
     def delete(self) -> None:
@@ -461,23 +474,31 @@ class LocalTransport:
         name_prefix: Optional[str] = None,
         ports: Optional[list[PortSpec]] = None,
     ) -> "list[Transport]":
-        # No control plane locally: fan out sequential single forks off the same
-        # golden (each CoW O(metadata) after the first freeze), cleaning up what
-        # succeeded on failure — best-effort local mirror of the cloud target's
-        # all-or-nothing transaction.
+        # The embedded engine freezes once, prepares the whole group from that
+        # retained snapshot, and boots clones in bounded parallel waves. It is
+        # transactional before returning; readiness below preserves that same
+        # all-or-nothing behavior for agent/service probes.
         resolved = _resolve_batch_names(count, names, name_prefix, "fork")
-        forks: list[Transport] = []
+        pinned = [(p.host, p.guest) for p in (ports or [])]
+        forks: list[LocalTransport] = []
         try:
-            for n in resolved:
-                forks.append(self.fork(n, ports))
-        except Exception:
+            try:
+                inners = self._inner.fork_batch(
+                    resolved, pinned, min(8, len(resolved))
+                )
+            except Exception as e:  # noqa: BLE001 - normalize native engine errors
+                raise wrap_native_error(e) from e
+            forks = [LocalTransport(inner) for inner in inners]
+            for fork in forks:
+                fork.wait_until_ready()
+        except BaseException:
             for f in forks:
                 try:
                     f.delete()
                 except Exception:
                     pass
             raise
-        return forks
+        return list(forks)
 
     def assign(
         self,
@@ -1250,6 +1271,8 @@ def make_transport(config: MachineConfig, conn: Optional[ConnectOptions] = None)
             body["env"] = dict(config.env)
         if config.workdir is not None:
             body["workdir"] = config.workdir
+        if config.command is not None:
+            body["command"] = list(config.command)
 
         created = _cloud_fetch(base_url, api_key, "POST", "/v1/machines", json_body=body) or {}
         machine_id = created["id"]
@@ -1271,7 +1294,12 @@ def make_transport(config: MachineConfig, conn: Optional[ConnectOptions] = None)
                 # machine record carries no error detail of its own.
                 start_error = str(e)
             try:
-                _wait_for_ready(base_url, api_key, machine_id)
+                _wait_for_ready(
+                    base_url,
+                    api_key,
+                    machine_id,
+                    timeout_s=config.ready_timeout_seconds,
+                )
             except SmolError as e:
                 if start_error is not None:
                     raise SmolError(e.code, f"{e} (start failed: {start_error})") from e
@@ -1298,7 +1326,7 @@ def make_transport(config: MachineConfig, conn: Optional[ConnectOptions] = None)
             inner.start_forkable()
         else:
             inner.start()
-        transport.wait_until_ready()
+        transport.wait_until_ready(config.ready_timeout_seconds)
         return transport
     except BaseException as e:
         if transport is not None:
@@ -1326,8 +1354,16 @@ def connect_transport(machine_id: str, conn: Optional[ConnectOptions] = None) ->
         # Local: start-or-reconnect to the named machine via the native engine.
         native = _load_native()
         try:
-            transport = LocalTransport(native.Machine.connect(machine_id))
-            transport.wait_until_ready()
+            # Connecting borrows an existing machine. The caller may still
+            # stop/delete it explicitly, but interpreter shutdown must not stop
+            # a durable checkpoint owned by another process or controller.
+            transport = LocalTransport(
+                native.Machine.connect(machine_id), cleanup_on_exit=False
+            )
+            # A frozen checkpoint is intentionally not agent-ready; it remains
+            # connectable so callers can fork its retained snapshot.
+            if transport.state() != "frozen":
+                transport.wait_until_ready()
             return transport
         except Exception as e:  # noqa: BLE001
             raise wrap_native_error(e) from e

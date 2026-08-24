@@ -7,6 +7,7 @@
 //! `transport.py`'s `LocalTransport` expects exactly this surface:
 //!   Machine(config: dict) / Machine.connect(name) -> instance
 //!   .name (property), .state(), .start(), .stop(), .delete()
+//!   .fork(name, ports) / .fork_batch(names, ports, parallel) -> Machine(s)
 //!   .exec(command, options) / .run(image, command, options) -> ExecResult
 //!   .read_file(path) -> bytes / .write_file(path, data, mode)
 //!   .pull_image(image) / .list_images() -> ImageInfo(s)
@@ -243,6 +244,10 @@ impl Machine {
             Some(v) if !v.is_none() => v.extract()?,
             _ => false,
         };
+        let forkable: bool = match config.get_item("forkable")? {
+            Some(v) if !v.is_none() => v.extract()?,
+            _ => false,
+        };
         let image: Option<String> = match config.get_item("image")? {
             Some(v) if !v.is_none() => Some(v.extract()?),
             _ => None,
@@ -252,6 +257,7 @@ impl Machine {
         // smol-node's `to_vm_resources`). `network`/`cpus`/`memory_mib` are
         // load-bearing — without `network=true` the guest can't pull images.
         let mut resources = smolvm::agent::VmResources::default();
+        let mut allowed_hosts: Vec<String> = Vec::new();
         if let Some(r) = config.get_item("resources")? {
             if let Ok(rd) = r.downcast::<PyDict>() {
                 if let Some(v) = rd.get_item("cpus")? {
@@ -267,6 +273,16 @@ impl Machine {
                 if let Some(v) = rd.get_item("network")? {
                     if !v.is_none() {
                         resources.network = v.extract()?;
+                    }
+                }
+                if let Some(v) = rd.get_item("allowed_cidrs")? {
+                    if !v.is_none() {
+                        resources.allowed_cidrs = Some(v.extract()?);
+                    }
+                }
+                if let Some(v) = rd.get_item("allowed_hosts")? {
+                    if !v.is_none() {
+                        allowed_hosts = v.extract()?;
                     }
                 }
                 if let Some(v) = rd.get_item("storage_gib")? {
@@ -379,6 +395,12 @@ impl Machine {
             .filter(|value| !value.is_none())
             .map(|value| value.extract())
             .transpose()?;
+        let command = config
+            .get_item("command")?
+            .filter(|value| !value.is_none())
+            .map(|value| value.extract())
+            .transpose()?
+            .unwrap_or_default();
 
         let spec = MachineSpec {
             name: name.clone(),
@@ -386,7 +408,10 @@ impl Machine {
             ports,
             resources,
             image,
+            command,
+            allowed_hosts,
             persistent,
+            forkable,
             runtime_managed: false,
             remote_volumes,
             ..Default::default()
@@ -403,7 +428,10 @@ impl Machine {
     /// backs the SDK's local `Machine.connect()`.
     #[staticmethod]
     fn connect(name: String) -> PyResult<Self> {
-        runtime().map_err(err)?.start_machine(&name).map_err(err)?;
+        runtime()
+            .map_err(err)?
+            .connect_or_start_machine(&name)
+            .map_err(err)?;
         Ok(Self { name })
     }
 
@@ -444,13 +472,34 @@ impl Machine {
     /// live RAM + disks (same host). `ports` are `(host, guest)` inbound forwards
     /// for the clone. Returns a handle to the running clone.
     #[pyo3(signature = (name, ports=None))]
-    fn fork(&self, name: String, ports: Option<Vec<(u16, u16)>>) -> PyResult<Self> {
+    fn fork(
+        &self,
+        py: Python<'_>,
+        name: String,
+        ports: Option<Vec<(u16, u16)>>,
+    ) -> PyResult<Self> {
         let pinned = ports.unwrap_or_default();
-        runtime()
-            .map_err(err)?
-            .fork_machine(&self.name, &name, &pinned)
+        let runtime = runtime().map_err(err)?;
+        py.allow_threads(|| runtime.fork_machine(&self.name, &name, &pinned))
             .map_err(err)?;
         Ok(Machine { name })
+    }
+
+    /// Fork many clones from one snapshot and boot them in bounded parallel
+    /// waves. Transactional: an error removes every clone in this call.
+    #[pyo3(signature = (names, ports=None, parallel=8))]
+    fn fork_batch(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        ports: Option<Vec<(u16, u16)>>,
+        parallel: usize,
+    ) -> PyResult<Vec<Self>> {
+        let pinned = ports.unwrap_or_default();
+        let runtime = runtime().map_err(err)?;
+        py.allow_threads(|| runtime.fork_machines(&self.name, &names, &pinned, parallel))
+            .map_err(err)?;
+        Ok(names.into_iter().map(|name| Machine { name }).collect())
     }
 
     #[pyo3(signature = (command, options=None))]
