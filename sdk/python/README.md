@@ -196,9 +196,11 @@ supports nested fork generations.
 ## Architecture
 - **Pure-Python layer** (`python/smol`): `Machine`, transports, types, errors —
   zero third-party deps (the cloud transport uses only `urllib`).
-- **Native core** (`src/lib.rs`, crate `smol-py`): a `pyo3` extension that links
-  the `smolvm` engine in-process for the local path — the Python analogue of the
+- **Native core** (`src/lib.rs`, crate `smol-py`): a `pyo3` extension that drives
+  the `smolvm` engine for the local path — the Python analogue of the
   `smol-node` NAPI crate. The local API is **synchronous** (the engine blocks).
+  The extension is in your process; the VMM is not — it runs as a separate
+  `smol-vmm` helper, seccomp- and Landlock-confined on Linux.
 - **Cloud transport**: a REST client to smolfleet `/v1` whose request/response
   shapes match smolfleet's OpenAPI contract (Bearer `smk_…`).
 
