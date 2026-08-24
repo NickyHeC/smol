@@ -21,8 +21,10 @@ engine, no server, no account), `cloud` runs the identical calls on
 program to managed capacity by changing where it connects — not what it does:
 
 ```ts
-const dev  = await Machine.create({ image: 'alpine', network: true });                    // local
-const prod = await Machine.create({ image: 'alpine' }, { target: 'cloud' });               // smolfleet
+const spec = { image: 'alpine', network: true };
+
+const dev  = await Machine.create(spec);                       // local: this machine
+const prod = await Machine.create(spec, { target: 'cloud' });  // smolfleet
 ```
 
 Create, exec, files, state, stop, delete — and branching — behave the same on
