@@ -1,7 +1,9 @@
 # smol (Node SDK)
 
 Embed isolated **microVM sandboxes** directly in your Node.js code — no server to
-run. The smolvm engine is linked in-process via a native addon.
+run. The SDK is linked into your process via a native addon; the VMM itself is
+a separate `smol-vmm` helper (seccomp- and Landlock-confined on Linux), so a
+guest escape lands there and not in your application.
 
 > **Supported platforms** (native *local* transport): macOS **Apple Silicon**, and
 > **Linux x64/arm64 with glibc ≥ 2.34** (RHEL 9, Ubuntu 22.04+, Debian 12, Amazon
@@ -14,6 +16,12 @@ the backend is chosen by `ConnectOptions`:
 ```ts
 // Local (embedded, default) — no server, no config:
 const local = await Machine.create({ resources: { cpus: 2, memoryMb: 1024 } });
+
+// Branch a prepared machine: a CoW clone of its RAM and disks, typically
+// under 200ms, so a warm environment is reused instead of rebuilt. Pass
+// `network: true` whenever an image has to be pulled.
+const golden = await Machine.create({ image: 'alpine', network: true, forkable: true });
+const branch = await golden.branch('b1');
 
 // Cloud (smolfleet) — pass an API key, or set SMOL_CLOUD_TOKEN.
 const cloud = await Machine.create(

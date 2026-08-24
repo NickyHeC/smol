@@ -13,13 +13,20 @@ backend is chosen via `ConnectOptions` / `SMOL_CLOUD_TOKEN`. Mirrors the
 ```python
 from smol import Machine, MachineConfig, ResourceSpec
 
-# Local (embedded microVM) — boots in-process, no server.
+# Local — no server. The SDK is in your process; the VMM is a separate,
+# seccomp/Landlock-confined helper.
 with Machine.create(MachineConfig(resources=ResourceSpec(cpus=2, memory_mb=1024, network=True))) as m:
     res = m.run("python:3.12", ["python", "-c", "print(2 ** 10)"])
     res.assert_success()
     print(res.stdout)            # 1024
     m.write_file("/tmp/in.txt", "hi")
     print(m.read_file("/tmp/in.txt").decode())
+
+# Branch a prepared machine: a CoW clone of its RAM and disks, typically under
+# 200ms, so a warm environment is reused instead of rebuilt. Pass network=True
+# whenever an image has to be pulled.
+golden = Machine.create(MachineConfig(image="alpine", network=True, forkable=True))
+branch = golden.branch("b1")
 
 # Cloud (smolfleet) — create() waits until it is ready for work.
 from smol import ConnectOptions
@@ -189,9 +196,11 @@ supports nested fork generations.
 ## Architecture
 - **Pure-Python layer** (`python/smol`): `Machine`, transports, types, errors —
   zero third-party deps (the cloud transport uses only `urllib`).
-- **Native core** (`src/lib.rs`, crate `smol-py`): a `pyo3` extension that links
-  the `smolvm` engine in-process for the local path — the Python analogue of the
+- **Native core** (`src/lib.rs`, crate `smol-py`): a `pyo3` extension that drives
+  the `smolvm` engine for the local path — the Python analogue of the
   `smol-node` NAPI crate. The local API is **synchronous** (the engine blocks).
+  The extension is in your process; the VMM is not — it runs as a separate
+  `smol-vmm` helper, seccomp- and Landlock-confined on Linux.
 - **Cloud transport**: a REST client to smolfleet `/v1` whose request/response
   shapes match smolfleet's OpenAPI contract (Bearer `smk_…`).
 

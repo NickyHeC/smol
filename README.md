@@ -12,9 +12,24 @@
 # smol
 
 Run code in isolated **microVM sandboxes** — from the command line, or embedded
-directly in your **Node** or **Python** app. The same `Machine` API works
-locally (an in-process microVM via the bundled smolvm engine — no server) or
-against the **smolfleet** cloud, selected at connect time.
+directly in your **Node** or **Python** app.
+
+**The same code runs on your laptop and in the cloud.** One `Machine` API, two
+transports: `local` boots a microVM on the machine you are sitting at (bundled
+engine, no server, no account), `cloud` runs the identical calls on
+**smolfleet**. Develop and test against a real VM offline, then move the same
+program to managed capacity by changing where it connects — not what it does:
+
+```ts
+const spec = { image: 'alpine', network: true };
+
+const dev  = await Machine.create(spec);                       // local: this machine
+const prod = await Machine.create(spec, { target: 'cloud' });  // smolfleet
+```
+
+Create, exec, files, state, stop, delete — and branching — behave the same on
+both. (A handful of local-only concepts, such as host bind mounts, are rejected
+up front on cloud rather than silently dropped.)
 
 ```
 ┌──────────────┐     ┌──────────────────────────── one Machine API ┐
@@ -34,8 +49,11 @@ pip install smolmachines      # Python
 
 Prebuilt packages bundle everything the **local** transport needs — the
 `libkrun` libraries, a code-signed boot helper, and the guest rootfs — so
-`Machine.create()` boots an in-process microVM with no separate install (macOS
-Apple Silicon and Linux x86_64/arm64, glibc ≥ 2.34). The **cloud** transport is
+`Machine.create()` boots a microVM with no separate install (macOS Apple
+Silicon and Linux x86_64/arm64, glibc ≥ 2.34). The SDK is in your process; the
+VMM is not — the engine runs as a separate `smol-vmm` helper, confined by
+seccomp and Landlock on Linux, so a guest escape lands there rather than in
+your application. The **cloud** transport is
 pure-language and runs anywhere. Booting a local microVM needs hardware
 virtualization (macOS Hypervisor.framework or Linux `/dev/kvm`).
 
@@ -64,12 +82,33 @@ Pin a release with `SMOL_VERSION=v1.3.7`; override locations with `PREFIX` /
 | `src/` | The `smol` CLI (Rust): create / run / exec / files / logs, plus cloud deploy + a container registry. |
 | `docs/cli.md` | CLI command reference. |
 
+## Branching
+
+Set a machine up once — toolchain, repo, dependencies, warm caches — then fork
+it copy-on-write. A branch inherits the parent's RAM *and* disks, so nothing
+re-installs: `node_modules` is there, caches are warm, a process mid-request
+keeps running.
+
+```ts
+const golden = await Machine.create({ image: 'alpine', network: true, forkable: true });
+// ... install deps and warm the caches, once ...
+const b = await golden.branch('b1');          // typically under 200ms
+await b.exec(['npm', 'test']);                // full speed, isolated
+const fleet = await golden.branchBatch({ count: 8, namePrefix: 'run' });
+```
+
+Branches are the unit of work for agents and CI: a fresh, VM-isolated machine
+per task without paying boot + setup each time. They work on both transports —
+locally against the machine in front of you, and on smolfleet, where a batch is
+atomic (all N branches or none). A branch is always node-local: it lives on the
+same host as its parent, because it shares that parent's memory pages.
+
 ## Quickstart — Node
 
 ```ts
 import { Machine } from 'smolmachines';
 
-// Local: boots an in-process microVM, no server.
+// Local: no server, no config.
 const m = await Machine.create({ resources: { cpus: 2, memoryMb: 1024, network: true } });
 try {
   const r = await m.run('python:3.12', ['python', '-c', 'print(2 ** 10)']);
