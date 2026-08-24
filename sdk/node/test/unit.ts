@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { wrapNativeError, SmolError } from '../errors';
 import { adapterSha256, RolloutClient } from '../rollout';
-import { cliConfigApiKey, encodePath, resolveNetwork, toNativeConfig } from '../transport';
+import { cliConfigApiKey, encodePath, resolveNetwork, selectsCloud, toNativeConfig } from '../transport';
 
 let passed = 0;
 let failed = 0;
@@ -177,6 +177,50 @@ check('cliConfigApiKey: empty api_key counts as absent', () => {
     writeFileSync(join(dir, 'smolvm', 'config.toml'), '[cloud]\napi_key = ""\n');
     assert.strictEqual(cliConfigApiKey(), undefined);
   });
+});
+
+// --- selectsCloud: a stored CLI login must not flip the default off local ---
+const withCloudToken = (value: string | undefined, fn: () => void) => {
+  const prev = process.env.SMOL_CLOUD_TOKEN;
+  if (value === undefined) delete process.env.SMOL_CLOUD_TOKEN;
+  else process.env.SMOL_CLOUD_TOKEN = value;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.SMOL_CLOUD_TOKEN;
+    else process.env.SMOL_CLOUD_TOKEN = prev;
+  }
+};
+check('selectsCloud: defaults to local with no explicit credential', () => {
+  withCloudToken(undefined, () => assert.strictEqual(selectsCloud({}), false));
+});
+check('selectsCloud: a CLI login on disk does NOT select cloud', () => {
+  // The regression: `smol auth login` writes config.toml, and reading it here
+  // used to send every default create to the cloud.
+  withXdg((dir) => {
+    mkdirSync(join(dir, 'smolvm'));
+    writeFileSync(join(dir, 'smolvm', 'config.toml'), '[cloud]\napi_key = "smk_from_cli"\n');
+    withCloudToken(undefined, () => {
+      assert.strictEqual(cliConfigApiKey(), 'smk_from_cli'); // the key IS on disk
+      assert.strictEqual(selectsCloud({}), false); // and is still not a target vote
+    });
+  });
+});
+check('selectsCloud: an explicit apiKey selects cloud', () => {
+  withCloudToken(undefined, () =>
+    assert.strictEqual(selectsCloud({ apiKey: 'smk_explicit' }), true),
+  );
+});
+check('selectsCloud: SMOL_CLOUD_TOKEN selects cloud', () => {
+  withCloudToken('smk_env', () => assert.strictEqual(selectsCloud({}), true));
+});
+check('selectsCloud: an explicit local target beats every credential', () => {
+  withCloudToken('smk_env', () =>
+    assert.strictEqual(selectsCloud({ target: 'local', apiKey: 'smk_explicit' }), false),
+  );
+});
+check('selectsCloud: an explicit cloud target needs no credential to select', () => {
+  withCloudToken(undefined, () => assert.strictEqual(selectsCloud({ target: 'cloud' }), true));
 });
 
 async function checkAsync(name: string, fn: () => Promise<void>) {

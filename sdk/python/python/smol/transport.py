@@ -1205,15 +1205,21 @@ _NO_KEY_HINT = (
 
 def make_transport(config: MachineConfig, conn: Optional[ConnectOptions] = None) -> Transport:
     conn = conn or ConnectOptions()
-    cli_key, cli_url = _cli_session() if conn.target != "local" else (None, None)
-    api_key = conn.api_key or os.environ.get("SMOL_CLOUD_TOKEN") or cli_key
-    use_cloud = conn.target == "cloud" or (conn.target != "local" and bool(api_key))
+    # Only an EXPLICIT credential may select the cloud target. `conn.api_key`
+    # and SMOL_CLOUD_TOKEN are deliberate acts by the caller; a CLI session on
+    # disk is a side effect of `smol auth login` and must not flip the default
+    # away from local. Reading it here is what made every default create on a
+    # machine that had ever logged in go to the cloud — and fail outright once
+    # that stored key expired.
+    explicit_key = conn.api_key or os.environ.get("SMOL_CLOUD_TOKEN")
+    use_cloud = conn.target == "cloud" or (conn.target != "local" and bool(explicit_key))
 
     if use_cloud:
-        # Fall back to the CLI's stored login only AFTER the cloud target is
-        # selected, so a `smol login` on the machine never silently flips the
-        # SDK's default target away from local.
-        api_key = api_key or _cli_config_api_key()
+        # Cloud is settled: NOW the CLI's stored login may supply the
+        # credential and endpoint, which is the reuse `smol auth login`
+        # promises.
+        cli_key, cli_url = _cli_session()
+        api_key = explicit_key or cli_key or _cli_config_api_key()
         if not api_key:
             raise InvalidConfigError(f"cloud target requires an api_key — {_NO_KEY_HINT}.")
         if not config.image:
@@ -1347,9 +1353,14 @@ def connect_transport(machine_id: str, conn: Optional[ConnectOptions] = None) ->
     * cloud: looks up the machine by id (raises NOT_FOUND otherwise).
     """
     conn = conn or ConnectOptions()
-    cli_key, cli_url = _cli_session() if conn.target != "local" else (None, None)
-    api_key = conn.api_key or os.environ.get("SMOL_CLOUD_TOKEN") or cli_key
-    use_cloud = conn.target == "cloud" or (conn.target != "local" and bool(api_key))
+    # Only an EXPLICIT credential may select the cloud target. `conn.api_key`
+    # and SMOL_CLOUD_TOKEN are deliberate acts by the caller; a CLI session on
+    # disk is a side effect of `smol auth login` and must not flip the default
+    # away from local. Reading it here is what made every default create on a
+    # machine that had ever logged in go to the cloud — and fail outright once
+    # that stored key expired.
+    explicit_key = conn.api_key or os.environ.get("SMOL_CLOUD_TOKEN")
+    use_cloud = conn.target == "cloud" or (conn.target != "local" and bool(explicit_key))
     if not use_cloud:
         # Local: start-or-reconnect to the named machine via the native engine.
         native = _load_native()
@@ -1369,7 +1380,8 @@ def connect_transport(machine_id: str, conn: Optional[ConnectOptions] = None) ->
             raise wrap_native_error(e) from e
     # As in make_transport: the CLI-login fallback applies only once the cloud
     # target is already selected.
-    api_key = api_key or _cli_config_api_key()
+    cli_key, cli_url = _cli_session()
+    api_key = explicit_key or cli_key or _cli_config_api_key()
     if not api_key:
         raise InvalidConfigError(f"connect requires an api_key — {_NO_KEY_HINT}.")
     base_url = (conn.base_url or os.environ.get("SMOL_CLOUD_URL") or cli_url or DEFAULT_CLOUD_URL).rstrip("/")
