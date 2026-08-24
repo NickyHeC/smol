@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { wrapNativeError, SmolError } from '../errors';
 import { adapterSha256, RolloutClient } from '../rollout';
 import { cliConfigApiKey, encodePath, resolveNetwork, selectsCloud, toNativeConfig } from '../transport';
+import { wireDefaultHardening } from '../assets';
 
 let passed = 0;
 let failed = 0;
@@ -221,6 +222,44 @@ check('selectsCloud: an explicit local target beats every credential', () => {
 });
 check('selectsCloud: an explicit cloud target needs no credential to select', () => {
   withCloudToken(undefined, () => assert.strictEqual(selectsCloud({ target: 'cloud' }), true));
+});
+
+// --- wireDefaultHardening: confine the spawned VMM unless told otherwise ---
+const withHardeningEnv = (
+  seccomp: string | undefined,
+  landlock: string | undefined,
+  fn: () => void,
+) => {
+  const prev = [process.env.SMOLVM_SECCOMP, process.env.SMOLVM_LANDLOCK];
+  const set = (k: string, v: string | undefined) => {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+  set('SMOLVM_SECCOMP', seccomp);
+  set('SMOLVM_LANDLOCK', landlock);
+  try {
+    fn();
+  } finally {
+    set('SMOLVM_SECCOMP', prev[0]);
+    set('SMOLVM_LANDLOCK', prev[1]);
+  }
+};
+check('wireDefaultHardening: an explicit value always wins', () => {
+  withHardeningEnv('off', 'off', () => {
+    wireDefaultHardening();
+    assert.strictEqual(process.env.SMOLVM_SECCOMP, 'off');
+    assert.strictEqual(process.env.SMOLVM_LANDLOCK, 'off');
+  });
+});
+check('wireDefaultHardening: enforces by default on Linux, no-ops elsewhere', () => {
+  withHardeningEnv(undefined, undefined, () => {
+    wireDefaultHardening();
+    // Both knobs are Linux-only in the engine; setting them on macOS/Windows
+    // would imply a confinement the helper does not apply.
+    const expected = process.platform === 'linux' ? 'enforce' : undefined;
+    assert.strictEqual(process.env.SMOLVM_SECCOMP, expected);
+    assert.strictEqual(process.env.SMOLVM_LANDLOCK, expected);
+  });
 });
 
 async function checkAsync(name: string, fn: () => Promise<void>) {

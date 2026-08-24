@@ -62,7 +62,27 @@ export function wireBundledAssets(): RuntimeAssets {
     }
     break;
   }
+  wireDefaultHardening();
   return assets;
+}
+
+/** Confine the spawned VMM by default on Linux.
+ *
+ *  `smol-vmm _boot-vm` reads SMOLVM_SECCOMP / SMOLVM_LANDLOCK and treats unset
+ *  as OFF, which `smolvm serve` compensates for by defaulting both to
+ *  "enforce". An embedding app got neither, so the SDK — whose whole purpose is
+ *  running untrusted code — was the least confined way to boot a VM. Default
+ *  them on here so `npm i smolmachines` is hardened out of the box; an
+ *  explicitly-set value always wins, so `SMOLVM_SECCOMP=off` remains the escape
+ *  hatch for a workload the allowlist does not cover.
+ *
+ *  Linux only: seccomp filtering is x86_64-Linux and Landlock is Linux; on
+ *  macOS the helper ignores both, so setting them would only be misleading.
+ */
+export function wireDefaultHardening(): void {
+  if (process.platform !== 'linux') return;
+  process.env.SMOLVM_SECCOMP ??= 'enforce';
+  process.env.SMOLVM_LANDLOCK ??= 'enforce';
 }
 
 wireBundledAssets();
