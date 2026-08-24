@@ -201,28 +201,33 @@ def _native_config(name: str, config: MachineConfig) -> dict:
     if config.ports:
         cfg["ports"] = [{"host": p.host, "guest": p.guest} for p in config.ports]
     r = config.resources
-    if r is not None:
+    network = resolve_network(config)
+    # A top-level `network` alone must still produce a resources block, so the
+    # assignment below is keyed on the RESOLVED value rather than on `resources`
+    # being present.
+    if r is not None or network is not None:
         res: dict[str, Any] = {}
-        if r.cpus is not None:
-            res["cpus"] = r.cpus
-        if r.memory_mb is not None:
-            res["memory_mib"] = r.memory_mb
-        if r.network is not None:
-            res["network"] = r.network
-        if r.allow_cidrs is not None:
-            res["allowed_cidrs"] = list(r.allow_cidrs)
-        if r.allow_hosts is not None:
-            res["allowed_hosts"] = list(r.allow_hosts)
-        if r.storage_gb is not None:
-            res["storage_gib"] = r.storage_gb
-        if r.overlay_gb is not None:
-            res["overlay_gib"] = r.overlay_gb
-        if r.gpu is not None:
-            res["gpu"] = r.gpu
-        if r.gpu_vram_mib is not None:
-            res["gpu_vram_mib"] = r.gpu_vram_mib
-        if r.cuda is not None:
-            res["cuda"] = r.cuda
+        if network is not None:
+            res["network"] = network
+        if r is not None:
+            if r.cpus is not None:
+                res["cpus"] = r.cpus
+            if r.memory_mb is not None:
+                res["memory_mib"] = r.memory_mb
+            if r.allow_cidrs is not None:
+                res["allowed_cidrs"] = list(r.allow_cidrs)
+            if r.allow_hosts is not None:
+                res["allowed_hosts"] = list(r.allow_hosts)
+            if r.storage_gb is not None:
+                res["storage_gib"] = r.storage_gb
+            if r.overlay_gb is not None:
+                res["overlay_gib"] = r.overlay_gb
+            if r.gpu is not None:
+                res["gpu"] = r.gpu
+            if r.gpu_vram_mib is not None:
+                res["gpu_vram_mib"] = r.gpu_vram_mib
+            if r.cuda is not None:
+                res["cuda"] = r.cuda
         cfg["resources"] = res
     return cfg
 
@@ -1182,6 +1187,19 @@ def _token_is_expired(expires_at: Any) -> bool:
         return False
 
 
+def resolve_network(config: MachineConfig) -> Optional[bool]:
+    """The effective network setting for a config.
+
+    `resources.network` is canonical; a top-level `network` is the shape callers
+    reach for first. Reading only the canonical one dropped the other in
+    silence. `resources.network` still wins when both are present, so no
+    existing config changes meaning. Mirrors `resolveNetwork` in the Node SDK.
+    """
+    r = config.resources
+    canonical = r.network if r is not None else None
+    return canonical if canonical is not None else config.network
+
+
 def _cli_session() -> tuple[Optional[str], Optional[str]]:
     """`(api_key, endpoint)` from the CLI's login session, or `(None, None)`.
     An expired access token is treated as absent so the caller surfaces an
@@ -1263,7 +1281,7 @@ def make_transport(config: MachineConfig, conn: Optional[ConnectOptions] = None)
                 "cidrs": r.allow_cidrs or [],
                 "hosts": r.allow_hosts or [],
             }
-        elif r and r.network:
+        elif resolve_network(config):
             body["network"] = {"mode": "open"}
         # Publish ports: supply only the guest port; the control plane allocates
         # the node host port (read the allocated hostPort back from the machine

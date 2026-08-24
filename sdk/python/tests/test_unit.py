@@ -12,7 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 from smol.errors import ExecutionError, SmolError, wrap_native_error  # noqa: E402
 from smol.rollout import RolloutClient, RolloutError, adapter_sha256  # noqa: E402
 from smol import transport as transport_module  # noqa: E402
-from smol.transport import _cli_config_api_key, _encode_path, _native_config  # noqa: E402
+from smol.transport import (  # noqa: E402
+    _cli_config_api_key,
+    _encode_path,
+    _native_config,
+    resolve_network,
+)
 from smol.types import (  # noqa: E402
     ConnectOptions,
     ExecResult,
@@ -523,3 +528,36 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+# --- resolve_network: a top-level `network` must not be dropped (Node parity) ---
+def test_toplevel_network_is_honoured_instead_of_dropped():
+    cfg = MachineConfig(image="alpine", network=True)
+    assert resolve_network(cfg) is True
+    assert _native_config("m", cfg)["resources"]["network"] is True
+
+
+def test_resources_network_still_wins_when_both_are_given():
+    cfg = MachineConfig(image="alpine", network=True, resources=ResourceSpec(network=False))
+    assert resolve_network(cfg) is False
+    assert _native_config("m", cfg)["resources"]["network"] is False
+
+
+def test_canonical_resources_network_is_unchanged():
+    cfg = MachineConfig(image="alpine", resources=ResourceSpec(network=True))
+    assert resolve_network(cfg) is True
+    assert _native_config("m", cfg)["resources"]["network"] is True
+
+
+def test_asking_for_neither_leaves_network_unset():
+    cfg = MachineConfig(image="alpine")
+    assert resolve_network(cfg) is None
+    assert "resources" not in _native_config("m", cfg)
+
+
+def test_toplevel_network_alone_still_emits_a_resources_block():
+    # The whole point of the fix: no ResourceSpec at all, network asked for at
+    # the top level, and the native config must still carry it.
+    cfg = MachineConfig(image="alpine", network=True)
+    native = _native_config("m", cfg)
+    assert native["resources"] == {"network": True}
