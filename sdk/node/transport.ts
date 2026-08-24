@@ -1242,6 +1242,21 @@ function cliSession(target: string | undefined): CliSession {
   return session;
 }
 
+/** Does this request target the cloud?
+ *
+ * Only an EXPLICIT credential may select cloud: `conn.apiKey` and
+ * SMOL_CLOUD_TOKEN are deliberate acts by the caller, whereas a CLI session on
+ * disk is a side effect of `smol auth login` and must never flip the default
+ * away from local. Letting the stored session decide sent every default
+ * `Machine.create()` on a machine that had ever logged in to the cloud — and
+ * failed outright once that key expired.
+ */
+export function selectsCloud(conn: ConnectOptions): boolean {
+  if (conn.target === "cloud") return true;
+  if (conn.target === "local") return false;
+  return Boolean(conn.apiKey ?? process.env.SMOL_CLOUD_TOKEN);
+}
+
 // Accurate guidance for the missing-credential errors. The old text said "run
 // 'smol login'" — a command that doesn't exist (it's `smol auth login`) and
 // that writes to config.toml, which the SDK now reads. Point at the real path.
@@ -1252,16 +1267,20 @@ export async function makeTransport(
   config: MachineConfig,
   conn: ConnectOptions,
 ): Promise<Transport> {
-  const { apiKey: cliKey, endpoint: cliUrl } = cliSession(conn.target);
-  const apiKey = conn.apiKey ?? process.env.SMOL_CLOUD_TOKEN ?? cliKey;
-  const useCloud =
-    conn.target === "cloud" || (conn.target !== "local" && Boolean(apiKey));
+  // Only an EXPLICIT credential may select the cloud target. `conn.apiKey` and
+  // SMOL_CLOUD_TOKEN are deliberate acts by the caller; a CLI session on disk is
+  // a side effect of `smol auth login` and must not flip the default away from
+  // local. Reading it here is what made every default `Machine.create()` on a
+  // machine that had ever logged in go to the cloud — and fail outright once
+  // that stored key expired.
+  const explicitKey = conn.apiKey ?? process.env.SMOL_CLOUD_TOKEN;
+  const useCloud = selectsCloud(conn);
 
   if (useCloud) {
-    // Fall back to the CLI's stored login only AFTER the cloud target is
-    // selected, so a `smol login` on the machine never silently flips the
-    // SDK's default target away from local.
-    const key = apiKey ?? cliConfigApiKey();
+    // Cloud is settled: NOW the CLI's stored login may supply the credential
+    // and endpoint, which is the reuse `smol auth login` promises.
+    const { apiKey: cliKey, endpoint: cliUrl } = cliSession(conn.target);
+    const key = explicitKey ?? cliKey ?? cliConfigApiKey();
     if (!key) {
       throw new InvalidConfigError(
         `cloud target requires an API key — ${NO_KEY_HINT}.`,
@@ -1418,10 +1437,14 @@ export async function connectTransport(
   id: string,
   conn: ConnectOptions,
 ): Promise<Transport> {
-  const { apiKey: cliKey, endpoint: cliUrl } = cliSession(conn.target);
-  const apiKey = conn.apiKey ?? process.env.SMOL_CLOUD_TOKEN ?? cliKey;
-  const useCloud =
-    conn.target === "cloud" || (conn.target !== "local" && !!apiKey);
+  // Only an EXPLICIT credential may select the cloud target. `conn.apiKey` and
+  // SMOL_CLOUD_TOKEN are deliberate acts by the caller; a CLI session on disk is
+  // a side effect of `smol auth login` and must not flip the default away from
+  // local. Reading it here is what made every default `Machine.create()` on a
+  // machine that had ever logged in go to the cloud — and fail outright once
+  // that stored key expired.
+  const explicitKey = conn.apiKey ?? process.env.SMOL_CLOUD_TOKEN;
+  const useCloud = selectsCloud(conn);
   if (!useCloud) {
     // Local: start-or-reconnect to the named machine via the native engine.
     try {
@@ -1443,7 +1466,8 @@ export async function connectTransport(
   }
   // As in makeTransport: the CLI-login fallback applies only once the cloud
   // target is already selected.
-  const key = apiKey ?? cliConfigApiKey();
+  const { apiKey: cliKey, endpoint: cliUrl } = cliSession(conn.target);
+  const key = explicitKey ?? cliKey ?? cliConfigApiKey();
   if (!key) {
     throw new InvalidConfigError(
       `connect requires an API key — ${NO_KEY_HINT}.`,
