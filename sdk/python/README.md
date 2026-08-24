@@ -13,13 +13,20 @@ backend is chosen via `ConnectOptions` / `SMOL_CLOUD_TOKEN`. Mirrors the
 ```python
 from smol import Machine, MachineConfig, ResourceSpec
 
-# Local (embedded microVM) — boots in-process, no server.
+# Local — no server. The SDK is in your process; the VMM is a separate,
+# seccomp/Landlock-confined helper.
 with Machine.create(MachineConfig(resources=ResourceSpec(cpus=2, memory_mb=1024, network=True))) as m:
     res = m.run("python:3.12", ["python", "-c", "print(2 ** 10)"])
     res.assert_success()
     print(res.stdout)            # 1024
     m.write_file("/tmp/in.txt", "hi")
     print(m.read_file("/tmp/in.txt").decode())
+
+# Branch a prepared machine: a CoW clone of its RAM and disks, typically under
+# 200ms, so a warm environment is reused instead of rebuilt. Pass network=True
+# whenever an image has to be pulled.
+golden = Machine.create(MachineConfig(image="alpine", network=True, forkable=True))
+branch = golden.branch("b1")
 
 # Cloud (smolfleet) — create() waits until it is ready for work.
 from smol import ConnectOptions

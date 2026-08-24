@@ -34,8 +34,11 @@ pip install smolmachines      # Python
 
 Prebuilt packages bundle everything the **local** transport needs — the
 `libkrun` libraries, a code-signed boot helper, and the guest rootfs — so
-`Machine.create()` boots an in-process microVM with no separate install (macOS
-Apple Silicon and Linux x86_64/arm64, glibc ≥ 2.34). The **cloud** transport is
+`Machine.create()` boots a microVM with no separate install (macOS Apple
+Silicon and Linux x86_64/arm64, glibc ≥ 2.34). The SDK is in your process; the
+VMM is not — the engine runs as a separate `smol-vmm` helper, confined by
+seccomp and Landlock on Linux, so a guest escape lands there rather than in
+your application. The **cloud** transport is
 pure-language and runs anywhere. Booting a local microVM needs hardware
 virtualization (macOS Hypervisor.framework or Linux `/dev/kvm`).
 
@@ -64,12 +67,31 @@ Pin a release with `SMOL_VERSION=v1.3.7`; override locations with `PREFIX` /
 | `src/` | The `smol` CLI (Rust): create / run / exec / files / logs, plus cloud deploy + a container registry. |
 | `docs/cli.md` | CLI command reference. |
 
+## Branching
+
+Set a machine up once — toolchain, repo, dependencies, warm caches — then fork
+it copy-on-write. A branch inherits the parent's RAM *and* disks, so nothing
+re-installs: `node_modules` is there, caches are warm, a process mid-request
+keeps running.
+
+```ts
+const golden = await Machine.create({ image: 'alpine', network: true, forkable: true });
+// ... install deps and warm the caches, once ...
+const b = await golden.branch('b1');          // typically under 200ms
+await b.exec(['npm', 'test']);                // full speed, isolated
+const fleet = await golden.branchBatch({ count: 8, namePrefix: 'run' });
+```
+
+Branches are the unit of work for agents and CI: a fresh, VM-isolated machine
+per task without paying boot + setup each time. They are node-local — a branch
+lives on the same host as its parent.
+
 ## Quickstart — Node
 
 ```ts
 import { Machine } from 'smolmachines';
 
-// Local: boots an in-process microVM, no server.
+// Local: no server, no config.
 const m = await Machine.create({ resources: { cpus: 2, memoryMb: 1024, network: true } });
 try {
   const r = await m.run('python:3.12', ['python', '-c', 'print(2 ** 10)']);
