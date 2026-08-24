@@ -11,6 +11,7 @@ is chosen via :class:`ConnectOptions` / ``SMOL_CLOUD_TOKEN``. Mirrors the Node S
 from __future__ import annotations
 
 import os as _os
+import sys as _sys
 from pathlib import Path as _Path
 
 
@@ -36,7 +37,26 @@ def _wire_bundled_native() -> None:
         _os.environ.setdefault("SMOLVM_AGENT_ROOTFS_TAR", str(rootfs_tar))
 
 
+def _wire_default_hardening() -> None:
+    """Confine the spawned VMM by default on Linux.
+
+    ``smol-vmm _boot-vm`` reads SMOLVM_SECCOMP / SMOLVM_LANDLOCK and treats
+    unset as OFF, which ``smolvm serve`` compensates for by defaulting both to
+    "enforce". An embedding app got neither, so the SDK — whose whole purpose is
+    running untrusted code — was the least confined way to boot a VM. Default
+    them on here; an explicitly-set value always wins, so ``SMOLVM_SECCOMP=off``
+    remains the escape hatch for a workload the allowlist does not cover. Linux
+    only: seccomp filtering is x86_64-Linux and Landlock is Linux, so setting
+    them elsewhere would only mislead.
+    """
+    if not _sys.platform.startswith("linux"):
+        return
+    _os.environ.setdefault("SMOLVM_SECCOMP", "enforce")
+    _os.environ.setdefault("SMOLVM_LANDLOCK", "enforce")
+
+
 _wire_bundled_native()
+_wire_default_hardening()
 
 from .errors import (
     ExecutionError,
