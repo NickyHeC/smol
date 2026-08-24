@@ -93,6 +93,14 @@ class MachineConfig:
     mounts: Optional[list[MountSpec]] = None
     ports: Optional[list[PortSpec]] = None
     resources: Optional[ResourceSpec] = None
+    network: Optional[bool] = None
+    """Give the guest network access. :attr:`ResourceSpec.network` is canonical;
+    this is the shape callers reach for first (and the one the Node SDK already
+    accepts). Reading only the canonical one meant this was dropped in silence,
+    so a config that plainly asked for network produced a machine without it —
+    and an image pull then failed with an unreachable-network error that reads
+    like a broken VM. ``resources.network`` still wins when both are given, so
+    no existing config changes meaning."""
     persistent: bool = False
     """Keep the machine record after the process exits (local)."""
     auto_stop_seconds: Optional[int] = None
