@@ -193,6 +193,50 @@ more commands. Close the branches before the source. A configured checkpoint
 fork is already a leaf, so it cannot request another live branch until SmolVM
 supports nested fork generations.
 
+### Harbor environment provider
+
+Run Harbor or Terminal-Bench trials as isolated copy-on-write SmolVM forks:
+
+```bash
+pip install 'smolmachines[harbor]'
+
+harbor run \
+  --dataset terminal-bench@2.0 \
+  --agent oracle \
+  --env smol.harbor:SmolEnvironment \
+  --n-concurrent 16
+```
+
+The provider uses Harbor's standard custom-environment interface and works with
+the same SDK configuration locally or on Smol Cloud. By default, the first
+trial for each distinct environment creates a warm checkpoint from its
+published `docker_image`; concurrent and later trials fork clean RAM/disk COW
+clones from that checkpoint. Set `--environment-kwarg auto_checkpoint=false`
+for cold one-machine-per-trial behavior.
+
+To use an environment prepared before the Harbor job, map its image reference
+or Harbor environment hash to the running checkpoint:
+
+```yaml
+environment:
+  import_path: smol.harbor:SmolEnvironment
+  kwargs:
+    target: cloud
+    checkpoints:
+      ghcr.io/acme/swe:ready:
+        machine: mach-prepared-swe
+        resources:
+          cpus: 4
+          memory_mb: 8192
+          storage_mb: 20480
+        network_mode: public
+```
+
+Checkpoint forks preserve initialized process and filesystem state rather than
+merely reusing image layers. The initial implementation supports Linux
+single-container tasks with a published `docker_image`; Docker Compose and
+Dockerfile-only tasks fail clearly instead of silently changing semantics.
+
 ## Architecture
 - **Pure-Python layer** (`python/smol`): `Machine`, transports, types, errors —
   zero third-party deps (the cloud transport uses only `urllib`).
